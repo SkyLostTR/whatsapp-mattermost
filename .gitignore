@@ -51,3 +51,4 @@ config.local.php
 # Media files
 media/
 attachments/
+node_modules/

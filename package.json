@@ -1,0 +1,21 @@
+{
+  "name": "@keeftraum/whatsapp-mattermost",
+  "version": "1.0.0",
+  "description": "Convert WhatsApp chat exports to Mattermost import format",
+  "main": "lib/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "dotenv": "^17.2.1",
+    "node-fetch": "^2.7.0"
+  },
+  "bin": {
+    "whatsapp-mattermost": "bin/convert.js"
+  }
+}
