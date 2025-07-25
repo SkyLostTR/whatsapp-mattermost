@@ -396,15 +396,19 @@ ini_set('display_errors', 1);
 ```
 whatsapp-mattermost/
 ├── src/
-│   ├── convert.php              # Main conversion script
-│   └── de/phosco/mattermost/whatsapp/
-│       ├── WhatsAppChat.php     # Chat parser
-│       ├── JsonLConverter.php   # Format converter
-│       ├── WhatsAppUserMap.php  # User mapping
-│       ├── WhatsAppPhoneMap.php # Phone mapping
-│       └── WhatsAppEmojiMap.php # Emoji mapping
-├── composer.json                # Dependencies
-└── README.md                    # This file
+│   ├── convert.php                        # Main conversion script
+│   └── de/
+│       └── phosco/
+│           └── mattermost/
+│               └── whatsapp/
+│                   ├── WhatsAppChat.php      # Parses WhatsApp chat exports
+│                   ├── JsonLConverter.php    # Converts chat data to Mattermost format
+│                   ├── WhatsAppUserMap.php   # Maps WhatsApp users to Mattermost usernames
+│                   ├── WhatsAppPhoneMap.php  # Maps phone numbers to usernames
+│                   └── WhatsAppEmojiMap.php  # Handles emoji conversion
+├── composer.json                          # PHP dependencies
+├── test_ziparchive.php                    # Test for PHP Zip extension
+└── README.md                              # Project documentation
 ```
 
 ## 🤝 Contributing
