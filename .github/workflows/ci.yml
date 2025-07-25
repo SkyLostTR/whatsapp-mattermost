@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        php-version: ['7.4', '8.0', '8.1', '8.2', '8.3']
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: ${{ matrix.php-version }}
+        extensions: zip, json, curl
+        coverage: xdebug
+        
+    - name: Validate composer.json and composer.lock
+      run: composer validate --strict
+      
+    - name: Cache Composer packages
+      id: composer-cache
+      uses: actions/cache@v3
+      with:
+        path: vendor
+        key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-php-
+          
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+      
+    - name: Run syntax check
+      run: |
+        find src -name "*.php" -exec php -l {} \;
+        
+    - name: Check code style
+      run: |
+        # Basic PHP syntax and structure validation
+        php -r "
+        \$files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator('src'));
+        foreach (\$files as \$file) {
+          if (\$file->getExtension() === 'php') {
+            \$content = file_get_contents(\$file);
+            if (strpos(\$content, '<?php') !== 0 && strpos(\$content, '#!/usr/bin/php') !== 0) {
+              echo 'File ' . \$file . ' does not start with proper PHP tag\n';
+              exit(1);
+            }
+          }
+        }
+        echo 'All PHP files have proper opening tags\n';
+        "
+
+version: '1.1.0'
