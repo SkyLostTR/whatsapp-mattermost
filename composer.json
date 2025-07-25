@@ -6,19 +6,13 @@
 	"homepage": "https://github.com/SkyLostTR/whatsapp-mattermost",
 	"license": "GPL-3.0-or-later",
 	"authors": [
-		{ 
-			"name": "André Rothe",
-			"email": "arothe@phosco.info",
-			"homepage": "https://www.phosco.info",
+		{
+			"name": "witchi",
 			"role": "Original Author"
 		},
 		{
-			"name": "witchi",
-			"role": "First Fork Maintainer"
-		},
-		{
 			"name": "SkyLostTR",
-			"role": "Current Fork Maintainer"
+			"role": "Fork Maintainer"
 		}
 	],
 	"support": {

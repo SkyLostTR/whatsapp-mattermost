@@ -64,11 +64,11 @@ A robust tool to convert WhatsApp chat exports into Mattermost-compatible format
    WHATSAPP_CHAT_FILE="C:\\path\\to\\your\\whatsapp\\chat\\export.txt"
    IMPORT_ZIP_PATH="C:\\path\\to\\save\\import.zip"
 
-   # User Mappings (format: "Display Name"="@username")
-   USER_MAPPINGS='"John Doe"="@john.doe";"Jane Smith"="@jane.smith"'
+   # User Mappings (format: "Display Name"="username")
+   USER_MAPPINGS='"John Doe"="john.doe";"Jane Smith"="jane.smith"'
 
-   # Phone Number Mappings (format: "phone_number"="@username")
-   PHONE_MAPPINGS='"1234567890"="@john.doe";"0987654321"="@jane.smith"'
+   # Phone Number Mappings with Country Code (format: "phone_number"="username")
+   PHONE_MAPPINGS='"905555555"="john.doe";"0987654321"="jane.smith"'
    ```
 
 > **Important**: The `.env` file contains sensitive information and is automatically ignored by git. Never commit it to version control.
@@ -105,7 +105,7 @@ Choose from three import methods:
 Configure user mappings in your `.env` file using the `USER_MAPPINGS` variable:
 
 ```env
-USER_MAPPINGS="WhatsApp Display Name"="@mattermost-username";"Another User"="@another.user"
+USER_MAPPINGS="WhatsApp Display Name"="mattermost-username";"Another User"="another.user"
 ```
 
 **Finding WhatsApp Names:**
@@ -117,7 +117,7 @@ USER_MAPPINGS="WhatsApp Display Name"="@mattermost-username";"Another User"="@an
 For @mentions in WhatsApp (which use phone numbers), configure the `PHONE_MAPPINGS` variable:
 
 ```env
-PHONE_MAPPINGS="1234567890"="@mattermost-username";"0987654321"="@another.user"
+PHONE_MAPPINGS="1234567890"="mattermost-username";"0987654321"="another.user"
 ```
 
 **Phone Number Format:**
@@ -286,8 +286,7 @@ Please review our [Security Policy](SECURITY.md) for information about reporting
 ---
 
 **Attribution:**
-- Originally created by [André Rothe](https://www.phosco.info) ([phosco/mattermost](https://github.com/phosco/mattermost))
-- Enhanced by [witchi](https://github.com/witchi) ([witchi/whatsapp-mattermost](https://github.com/witchi/whatsapp-mattermost))
+- Originally created by [witchi](https://github.com/witchi) ([witchi/whatsapp-mattermost](https://github.com/witchi/whatsapp-mattermost))
 - Maintained and improved by [SkyLostTR](https://github.com/SkyLostTR)
 
 Version 1.1.0

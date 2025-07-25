@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - Release Date: 2025-07-25
 
 ### Added
 - GitHub Actions CI/CD pipeline
@@ -36,9 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Project History
 This project has evolved through multiple contributors:
-1. **Original**: [phosco/mattermost](https://github.com/phosco/mattermost) - Initial WhatsApp to Mattermost converter by André Rothe
-2. **First Fork**: [witchi/whatsapp-mattermost](https://github.com/witchi/whatsapp-mattermost) - Enhanced version with improvements
-3. **Current Fork**: [SkyLostTR/whatsapp-mattermost](https://github.com/SkyLostTR/whatsapp-mattermost) - This repository with GitHub integration and documentation
+1. **Original**: [witchi/whatsapp-mattermost](https://github.com/witchi/whatsapp-mattermost) - Enhanced version with improvements
+2. **Fork**: [SkyLostTR/whatsapp-mattermost](https://github.com/SkyLostTR/whatsapp-mattermost) - This repository with GitHub integration and documentation
 
 ### Added
 - Basic WhatsApp to Mattermost conversion functionality
@@ -48,6 +47,7 @@ This project has evolved through multiple contributors:
 - JSONL export format
 - Command-line interface
 
+
 ### Features
 - Parse WhatsApp chat exports (text + media)
 - Convert to Mattermost-compatible format
@@ -55,5 +55,3 @@ This project has evolved through multiple contributors:
 - Handle @mentions via phone numbers
 - Convert emojis to Mattermost format
 - Support for images, videos, and documents
-
-## [1.1.0] - Release Date: 2025-07-25
