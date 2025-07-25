@@ -33,9 +33,13 @@ A robust tool to convert WhatsApp chat exports into Mattermost-compatible format
    cd whatsapp-mattermost
    ```
 
-2. **Install dependencies**
+2. **Install dependencies with Composer**
    ```powershell
    composer install
+   ```
+   Or, if you have PHP installed globally:
+   ```powershell
+   php composer.phar install
    ```
 
 3. **Check PHP Zip extension** (optional but recommended)
@@ -171,7 +175,166 @@ Creates an import package for manual upload:
 - ✅ Good for review before import
 - ❌ Manual upload required
 
-## 😀 Emoji Handling
+## �️ Mattermost CLI Import Guide
+
+For advanced users or when the API methods don't work, you can use Mattermost's command-line tool (`mmctl`) to import your data directly.
+
+### Prerequisites
+
+1. **Download mmctl**: Get the latest version from [Mattermost releases](https://github.com/mattermost/mmctl/releases)
+2. **Admin access**: You need system admin privileges on your Mattermost instance
+3. **Import package**: Use Method 3 (File Export) to create your import.zip
+
+### Authentication
+
+#### Option 1: Direct Authentication
+```bash
+# Authenticate with your Mattermost server
+mmctl auth login https://your-mattermost-server.com --name myserver
+# Enter your admin username and password when prompted
+```
+
+#### Option 2: Local Mode (Docker installations)
+```bash
+# If running Mattermost in Docker, use local mode
+mmctl --local auth login
+```
+
+#### Option 3: Access Token
+```bash
+# Use an admin personal access token
+mmctl auth login https://your-mattermost-server.com --name myserver --access-token YOUR_ADMIN_TOKEN
+```
+
+### Import Process
+
+#### Standard Installation
+```bash
+# Navigate to your import package location
+cd /path/to/your/import/
+
+# Import the package (bypasses file upload, processes locally)
+mmctl --local import process --bypass-upload --extract-content import.zip
+
+# Alternative: Upload and import
+mmctl import upload import.zip
+mmctl import list available  # Find your import job ID
+mmctl import process <job-id>
+```
+
+#### Docker Installation
+
+**Method 1: Copy to container**
+```bash
+# Copy import package to container
+docker cp import.zip mattermost-server:/tmp/
+
+# Execute import inside container
+docker exec -it mattermost-server mmctl --local import process --bypass-upload --extract-content /tmp/import.zip
+```
+
+**Method 2: Volume mount**
+```bash
+# If you have volume mounted, place import.zip in the mounted directory
+# Then run from inside container
+docker exec -it mattermost-server mmctl --local import process --bypass-upload --extract-content /mattermost/import.zip
+```
+
+**Method 3: Direct CLI access**
+```bash
+# If mmctl is available on host system
+mmctl --local import process --bypass-upload --extract-content ./import.zip
+```
+
+### Docker Compose Example
+
+If using docker-compose, add this to your workflow:
+
+```yaml
+# In your docker-compose.yml, ensure volumes are mapped
+volumes:
+  - ./imports:/mattermost/imports
+```
+
+Then:
+```bash
+# Place your import.zip in the ./imports directory
+cp import.zip ./imports/
+
+# Run import
+docker-compose exec app mmctl --local import process --bypass-upload --extract-content /mattermost/imports/import.zip
+```
+
+### Import Verification
+
+```bash
+# Check import job status
+mmctl import list
+
+# View import job details
+mmctl import job show <job-id>
+
+# Monitor server logs during import
+mmctl logs tail
+```
+
+### Common mmctl Import Issues
+
+**Permission denied:**
+```bash
+# Ensure you're authenticated as admin
+mmctl user list --system-admin
+
+# Check your authentication
+mmctl auth current
+```
+
+**File not found:**
+```bash
+# Verify file path and permissions
+ls -la /path/to/import.zip
+```
+
+**Import validation errors:**
+```bash
+# Use dry-run to check import without processing
+mmctl import validate import.zip
+
+# Check the import.zip structure
+unzip -l import.zip
+```
+
+### Performance Tips
+
+- **Large imports**: Use `--bypass-upload` for faster processing
+- **Network issues**: Use local mode when possible
+- **Memory**: Monitor server resources during import
+- **Batching**: For very large chats, consider splitting the export
+
+### Example Complete Workflow
+
+```bash
+# 0. Install dependencies
+composer install
+
+# 1. Generate import package
+php src/convert.php
+# Choose option 3 (File Export)
+
+# 2. Authenticate with Mattermost
+mmctl auth login https://your-server.com --name production
+
+# 3. Validate import (optional)
+mmctl import validate import.zip
+
+# 4. Process import
+mmctl --local import process --bypass-upload --extract-content import.zip
+
+# 5. Verify import
+mmctl import list
+```
+
+## �😀 Emoji Handling
 
 WhatsApp and Mattermost use different emoji formats. The tool includes automatic emoji conversion:
 
