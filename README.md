@@ -156,6 +156,7 @@ Uses Mattermost's bulk import API for faster processing:
 - ✅ Preserves message timestamps
 - ✅ Handles media attachments
 - ❌ Requires admin permissions
+- ⚠️ Posts appear under the account performing the import, not original sender names
 
 ### Method 2: Individual Posts
 
@@ -165,6 +166,7 @@ Posts messages one by one using the regular API:
 - ✅ Good for smaller chats
 - ❌ Slower for large chats
 - ❌ May hit rate limits
+- ⚠️ Posts appear under the account performing the import, not original sender names
 
 ### Method 3: File Export
 
@@ -173,9 +175,10 @@ Creates an import package for manual upload:
 - ✅ Works offline
 - ✅ Can be imported later
 - ✅ Good for review before import
+- ✅ Correctly attributes posts to original sender names (when imported via Mattermost import tools)
 - ❌ Manual upload required
 
-## �️ Mattermost CLI Import Guide
+## 🖥️ Mattermost CLI Import Guide
 
 For advanced users or when the API methods don't work, you can use Mattermost's command-line tool (`mmctl`) to import your data directly.
 
@@ -334,7 +337,7 @@ mmctl --local import process --bypass-upload --extract-content import.zip
 mmctl import list
 ```
 
-## �😀 Emoji Handling
+## 😀 Emoji Handling
 
 WhatsApp and Mattermost use different emoji formats. The tool includes automatic emoji conversion:
 
