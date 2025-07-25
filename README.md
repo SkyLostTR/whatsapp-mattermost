@@ -76,6 +76,8 @@ A robust tool to convert WhatsApp chat exports into Mattermost-compatible format
    ```
 
 > **Important**: The `.env` file contains sensitive information and is automatically ignored by git. Never commit it to version control.
+>
+> The included `src/config.php` helper automatically loads variables from this file when running the converter.
 
 ## 📋 Usage
 
