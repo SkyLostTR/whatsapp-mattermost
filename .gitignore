@@ -45,8 +45,9 @@ exports/
 imports/
 
 # Configuration files with sensitive data
-config.php
+/config.php
 config.local.php
+!src/config.php
 
 # Media files
 media/
