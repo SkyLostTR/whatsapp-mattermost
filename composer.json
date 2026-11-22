@@ -39,7 +39,11 @@
 	},
 	"scripts": {
 		"check-syntax": "find src -name '*.php' -exec php -l {} \\;",
-		"test-zip": "php test_ziparchive.php"
+		"test-zip": "php test_ziparchive.php",
+		"test": [
+			"php tests/test_media_import.php",
+			"php test_message_splitting.php"
+		]
 	},
 	"config": {
 		"sort-packages": true,

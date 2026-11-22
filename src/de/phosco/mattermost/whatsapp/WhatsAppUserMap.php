@@ -14,11 +14,12 @@ class WhatsAppUserMap {
 
     public function add(string $waUser, string $mmUser): void {
 
-        $this->map[$waUser] = $mmUser;
+        $this->map[WhatsAppChat::cleanName($waUser)] = $mmUser;
     }
 
     public function get(string $waUser): ?string {
 
+        $waUser = WhatsAppChat::cleanName($waUser);
         if (isset($this->map[$waUser])) {
             return $this->map[$waUser];
         }

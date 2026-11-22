@@ -2,363 +2,433 @@
 <?php
 declare(strict_types = 1);
 
-use de\phosco\mattermost\whatsapp\WhatsAppChat;
+use de\phosco\mattermost\whatsapp\ImportPackage;
 use de\phosco\mattermost\whatsapp\JsonLConverter;
-use de\phosco\mattermost\whatsapp\WhatsAppUserMap;
-use de\phosco\mattermost\whatsapp\WhatsAppPhoneMap;
+use de\phosco\mattermost\whatsapp\MediaResolver;
+use de\phosco\mattermost\whatsapp\WhatsAppChat;
 use de\phosco\mattermost\whatsapp\WhatsAppEmojiMap;
+use de\phosco\mattermost\whatsapp\WhatsAppPhoneMap;
+use de\phosco\mattermost\whatsapp\WhatsAppUserMap;
 
 require_once __DIR__ . "/../vendor/autoload.php";
 require_once __DIR__ . "/config.php";
 
-// Validate environment configuration
-$errors = validateEnvironment();
+function usage(): void {
+
+    echo <<<TXT
+Usage: php src/convert.php [options]
+
+Every option falls back to the matching variable in .env.
+
+  --input <file>     WhatsApp export: the chat .txt or the exported .zip     (WHATSAPP_CHAT_FILE)
+  --media <dir>      Folder with the exported media, searched recursively    (WHATSAPP_MEDIA_DIR)
+                     Default: the folder of the chat file
+  --output <file>    Import package to write (.zip)                          (IMPORT_ZIP_PATH)
+  --team <name>      Mattermost team name                                    (MATTERMOST_TEAM_NAME)
+  --channel <name>   Mattermost channel name                                 (MATTERMOST_CHANNEL_NAME)
+  --method <m>       1|bulk, 2|posts or 3|file. Asks interactively if omitted.
+  -h, --help         Show this help
+
+TXT;
+}
+
+/**
+ * Perform a Mattermost API request.
+ *
+ * @param mixed $body array => JSON, string => raw body, null => no body
+ *
+ * @return array{0:int,1:mixed,2:string,3:string} HTTP code, decoded JSON, raw response, cURL error
+ */
+function mattermostRequest(array $config, string $method, string $path, $body = null, array $curlOptions = array()): array {
+
+    $ch = curl_init(rtrim($config['url'], '/') . '/api/v4' . $path);
+    $headers = array('Authorization: Bearer ' . $config['token']);
+
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    if (!$config['tls_verify']) {
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+    }
+    if (is_array($body) && !isset($curlOptions[CURLOPT_POSTFIELDS])) {
+        $headers[] = 'Content-Type: application/json';
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body));
+    } elseif (is_string($body)) {
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+    }
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    foreach ($curlOptions as $option => $value) {
+        curl_setopt($ch, $option, $value);
+    }
+
+    $response = curl_exec($ch);
+    $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    $raw = is_string($response) ? $response : '';
+    return array($code, json_decode($raw, true), $raw, $error);
+}
+
+function reportApiError(string $what, array $result): void {
+
+    list($code, $json, $raw, $error) = $result;
+    echo "$what failed. HTTP Code: $code\n";
+    if ($error !== '') {
+        echo "cURL Error: $error\n";
+    }
+    echo "Response: " . (is_array($json) && isset($json['message']) ? $json['message'] : $raw) . "\n";
+}
+
+/**
+ * Upload the import package and start the import job - the API equivalent of
+ * "mmctl import upload" + "mmctl import process". Requires a system admin token.
+ */
+function importToMattermost(array $config, string $zipPath): bool {
+
+    $size = filesize($zipPath);
+    $name = basename($zipPath);
+
+    // 1. create upload session
+    $result = mattermostRequest($config, 'POST', '/uploads',
+            array('type' => 'import', 'filename' => $name, 'file_size' => $size));
+    if ($result[0] !== 201 && $result[0] !== 200) {
+        reportApiError("Creating the import upload session", $result);
+        return false;
+    }
+    $uploadId = $result[1]['id'];
+
+    // 2. upload the package (streamed)
+    $handle = fopen($zipPath, 'rb');
+    $result = mattermostRequest($config, 'POST', '/uploads/' . $uploadId, null, array(
+        CURLOPT_UPLOAD => true,
+        CURLOPT_CUSTOMREQUEST => 'POST',
+        CURLOPT_INFILE => $handle,
+        CURLOPT_INFILESIZE => $size
+    ));
+    fclose($handle);
+    if ($result[0] !== 201 && $result[0] !== 200) {
+        reportApiError("Uploading the import package", $result);
+        return false;
+    }
+
+    // 3. start the import job
+    $importFile = $uploadId . '_' . $name;
+    $result = mattermostRequest($config, 'POST', '/jobs',
+            array('type' => 'import_process', 'data' => array('import_file' => $importFile)));
+    if ($result[0] !== 201 && $result[0] !== 200) {
+        reportApiError("Starting the import job", $result);
+        return false;
+    }
+    $jobId = $result[1]['id'];
+    echo "Import job $jobId started for $importFile\n";
+
+    // 4. wait for the job
+    $status = 'pending';
+    for ($i = 0; $i < 720; $i++) {
+        sleep(5);
+        $result = mattermostRequest($config, 'GET', '/jobs/' . $jobId);
+        if ($result[0] !== 200) {
+            reportApiError("Reading the import job status", $result);
+            return false;
+        }
+        $status = $result[1]['status'] ?? 'unknown';
+        echo "Import job status: $status\r";
+        if (in_array($status, array('success', 'error', 'canceled'), true)) {
+            break;
+        }
+    }
+    echo "\n";
+
+    if ($status === 'success') {
+        echo "Import successful!\n";
+        return true;
+    }
+    echo "Import job finished with status '$status'.\n";
+    if (!empty($result[1]['data']['error'])) {
+        echo "Error: " . $result[1]['data']['error'] . "\n";
+    }
+    echo "Check it with: mmctl import job show $jobId\n";
+    return false;
+}
+
+/**
+ * Post every message through the regular API, uploading its media first.
+ * Posts appear under the account owning the token.
+ */
+function importPostsDirectly(array $config, array $posts, array $attachments): bool {
+
+    $result = mattermostRequest($config, 'GET', '/teams/name/' . rawurlencode($config['team']));
+    if ($result[0] !== 200) {
+        reportApiError("Looking up team '{$config['team']}'", $result);
+        return false;
+    }
+    $teamId = $result[1]['id'];
+
+    $result = mattermostRequest($config, 'GET',
+            '/teams/' . $teamId . '/channels/name/' . rawurlencode($config['channel']));
+    if ($result[0] !== 200) {
+        reportApiError("Looking up channel '{$config['channel']}'", $result);
+        return false;
+    }
+    $channelId = $result[1]['id'];
+
+    $posts = array_values(array_filter($posts, function (array $entry): bool {
+        return ($entry['type'] ?? '') === 'post';
+    }));
+
+    $successCount = 0;
+    $totalPosts = count($posts);
+
+    foreach ($posts as $index => $postData) {
+        $post = $postData['post'];
+
+        $fileIds = array();
+        foreach ($post['attachments'] ?? array() as $attachment) {
+            $source = $attachments[$attachment['path']] ?? null;
+            if ($source === null) {
+                continue;
+            }
+            $result = mattermostRequest($config, 'POST', '/files', null, array(
+                CURLOPT_POSTFIELDS => array(
+                    'channel_id' => $channelId,
+                    'files' => new CURLFile($source, '', basename($attachment['path']))
+                )
+            ));
+            if (($result[0] === 201 || $result[0] === 200) && !empty($result[1]['file_infos'][0]['id'])) {
+                $fileIds[] = $result[1]['file_infos'][0]['id'];
+            } else {
+                echo "\n";
+                reportApiError("Uploading {$attachment['path']}", $result);
+            }
+        }
+
+        $payload = array(
+            'channel_id' => $channelId,
+            'message' => $post['message'],
+            'create_at' => $post['create_at']
+        );
+        if (count($fileIds) > 0) {
+            $payload['file_ids'] = $fileIds;
+        }
+
+        $result = mattermostRequest($config, 'POST', '/posts', $payload);
+        if ($result[0] === 200 || $result[0] === 201) {
+            $successCount++;
+            echo "Posted " . ($index + 1) . "/$totalPosts messages\r";
+        } else {
+            echo "\n";
+            reportApiError("Posting message " . ($index + 1), $result);
+        }
+
+        // Small delay to avoid rate limiting
+        usleep(100000);
+    }
+
+    echo "\nSuccessfully imported $successCount out of $totalPosts posts.\n";
+    return $successCount > 0;
+}
+
+/**
+ * Write the import package. Falls back to a folder when the zip extension is missing.
+ *
+ * @return string|null Path of the written zip, null if a folder was written or writing failed
+ */
+function writeImportPackage(string $zipPath, string $jsonl, array $attachments): ?string {
+
+    try {
+        if (class_exists('ZipArchive')) {
+            $added = ImportPackage::createZip($zipPath, $jsonl, $attachments);
+            echo "Added $added media files to $zipPath\n";
+            return $zipPath;
+        }
+        echo "ZipArchive not available. Creating folder structure instead...\n";
+        $folder = preg_replace('/\.zip$/i', '', $zipPath);
+        $copied = ImportPackage::createFolder($folder, $jsonl, $attachments);
+        echo "Copied $copied media files. Import structure created at: $folder\n";
+        echo "Zip its contents (data.jsonl and data/) to import it with mmctl.\n";
+    } catch (\RuntimeException $e) {
+        echo $e->getMessage() . "\n";
+    }
+    return null;
+}
+
+/**
+ * Extract an exported WhatsApp .zip and return the chat text file inside it.
+ */
+function extractChatArchive(string $zipFile): string {
+
+    if (!class_exists('ZipArchive')) {
+        throw new \RuntimeException("The PHP zip extension is required to read $zipFile");
+    }
+    $dir = sys_get_temp_dir() . '/whatsapp_export_' . bin2hex(random_bytes(6));
+    $zip = new ZipArchive();
+    if ($zip->open($zipFile) !== true || !mkdir($dir, 0700) || !$zip->extractTo($dir)) {
+        throw new \RuntimeException("Could not extract $zipFile");
+    }
+    $zip->close();
+
+    register_shutdown_function(function () use ($dir): void {
+        $items = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::CHILD_FIRST);
+        foreach ($items as $item) {
+            $item->isDir() ? rmdir($item->getPathname()) : unlink($item->getPathname());
+        }
+        rmdir($dir);
+    });
+
+    $candidates = array();
+    foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS)) as $file) {
+        if ($file->isFile() && strtolower($file->getExtension()) === 'txt' && strpos($file->getPathname(), '__MACOSX') === false) {
+            $candidates[] = $file->getPathname();
+        }
+    }
+    if (count($candidates) === 0) {
+        throw new \RuntimeException("No chat .txt file found in $zipFile");
+    }
+    // iOS names it _chat.txt, Android "WhatsApp Chat with ....txt"; prefer those over attached .txt documents
+    usort($candidates, function (string $a, string $b): int {
+        $score = function (string $path): int {
+            $name = strtolower(basename($path));
+            return ($name === '_chat.txt' || strpos($name, 'whatsapp') !== false) ? 0 : 1;
+        };
+        return array($score($a), substr_count($a, '/'), $a) <=> array($score($b), substr_count($b, '/'), $b);
+    });
+    return $candidates[0];
+}
+
+// ---------------------------------------------------------------------------
+
+$options = getopt('h', array('input:', 'media:', 'output:', 'team:', 'channel:', 'method:', 'help'));
+if ($options === false || isset($options['h']) || isset($options['help'])) {
+    usage();
+    exit($options === false ? 1 : 0);
+}
+
+$config = array(
+    'chat_file' => $options['input'] ?? env('WHATSAPP_CHAT_FILE'),
+    'media_dir' => $options['media'] ?? env('WHATSAPP_MEDIA_DIR'),
+    'output' => $options['output'] ?? env('IMPORT_ZIP_PATH'),
+    'team' => $options['team'] ?? env('MATTERMOST_TEAM_NAME'),
+    'channel' => $options['channel'] ?? env('MATTERMOST_CHANNEL_NAME'),
+    'url' => env('MATTERMOST_URL'),
+    'token' => env('MATTERMOST_API_TOKEN'),
+    'tls_verify' => !envBool('MATTERMOST_SKIP_TLS_VERIFY', false),
+    'date_order' => env('DATE_ORDER'),
+    'timezone' => env('TIMEZONE')
+);
+
+$methods = array('1' => '1', 'bulk' => '1', '2' => '2', 'posts' => '2', '3' => '3', 'file' => '3');
+if (isset($options['method'])) {
+    $choice = $methods[strtolower((string) $options['method'])] ?? null;
+    if ($choice === null) {
+        echo "Unknown --method '{$options['method']}'\n";
+        usage();
+        exit(1);
+    }
+} else {
+    echo "Choose import method:\n";
+    echo "1. Direct API import (Bulk import using Mattermost import API, requires system admin)\n";
+    echo "2. Individual post import (Posts one by one via regular API)\n";
+    echo "3. Save to file only\n";
+    echo "Enter choice (1-3): ";
+    $input = fgets(STDIN);
+    $choice = $methods[strtolower(trim($input === false ? '' : $input))] ?? '3';
+}
+
+$errors = validateConfig($config, $choice !== '3');
 if (!empty($errors)) {
     echo "Configuration errors found:\n";
     foreach ($errors as $error) {
         echo "- $error\n";
     }
-    echo "\nPlease check your .env file configuration.\n";
+    echo "\nPlease check your .env file configuration or command line options (--help).\n";
     exit(1);
 }
 
-function write2disk(string $file, string $json): void {
-
-    $handle = fopen($file, "w");
-    fputs($handle, $json);
-    fclose($handle);
+// The import package has to be a zip containing data.jsonl and the media
+if (preg_match('/\.jsonl?$/i', $config['output'])) {
+    $config['output'] = preg_replace('/\.jsonl?$/i', '.zip', $config['output']);
+    echo "Note: Mattermost imports a .zip containing the JSONL and the media, writing {$config['output']}\n";
 }
 
-function importToMattermost(string $jsonlData, string $mattermostUrl, string $token, string $mediaDir = ""): bool {
-    $url = rtrim($mattermostUrl, '/') . '/api/v4/imports';
-    
-    // Check if ZipArchive is available
-    if (!class_exists('ZipArchive')) {
-        echo "ZipArchive not available. Cannot create zip for import.\n";
-        echo "Please install the PHP zip extension or create the import package manually.\n";
-        return false;
-    }
-    
-    // Create a temporary zip file for the import
-    $tempZip = tempnam(sys_get_temp_dir(), 'mattermost_import_') . '.zip';
-    $zip = new ZipArchive();
-    
-    if ($zip->open($tempZip, ZipArchive::CREATE) !== TRUE) {
-        echo "Failed to create zip file for import\n";
-        return false;
-    }
-    
-    // Add the JSONL data to the zip
-    $zip->addFromString('data.jsonl', $jsonlData);
-    
-    // If media directory is provided, add media files to the data folder
-    if (!empty($mediaDir) && is_dir($mediaDir)) {
-        $files = scandir($mediaDir);
-        foreach ($files as $file) {
-            if ($file !== '.' && $file !== '..' && is_file($mediaDir . '/' . $file)) {
-                // Only add common media file types
-                $extension = strtolower(pathinfo($file, PATHINFO_EXTENSION));
-                if (in_array($extension, ['jpg', 'jpeg', 'png', 'gif', 'mp4', 'webp', 'pdf', 'doc', 'docx'])) {
-                    $zip->addFile($mediaDir . '/' . $file, 'data/' . $file);
-                }
-            }
+try {
+    if (strtolower(pathinfo($config['chat_file'], PATHINFO_EXTENSION)) === 'zip') {
+        $archive = $config['chat_file'];
+        $config['chat_file'] = extractChatArchive($archive);
+        if (empty($config['media_dir'])) {
+            $config['media_dir'] = dirname($config['chat_file']);
         }
+        echo "Extracted $archive\n";
     }
-    
-    $zip->close();
-    
-    $headers = [
-        'Authorization: Bearer ' . $token,
-    ];
-    
-    $postData = [
-        'file' => new CURLFile($tempZip, 'application/zip', 'import.zip'),
-        'filesize' => filesize($tempZip),
-        'importFrom' => 'slack' // Use slack format as it's compatible
-    ];
-    
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $url);
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, $postData);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $error = curl_error($ch);
-    curl_close($ch);
-    
-    // Clean up temp file
-    unlink($tempZip);
-    
-    if ($httpCode === 200 || $httpCode === 201) {
-        echo "Import successful!\n";
-        echo "Response: $response\n";
-        return true;
-    } else {
-        echo "Import failed. HTTP Code: $httpCode\n";
-        if ($error) {
-            echo "cURL Error: $error\n";
-        }
-        echo "Response: $response\n";
-        return false;
+
+    $chat = new WhatsAppChat($config['chat_file'], $config['media_dir'], $config['date_order']);
+    $resolver = new MediaResolver($chat->getMediaFolder(), array($chat->getChatFile()));
+    $converter = new JsonLConverter($config['team'], $config['channel'], $resolver, $config['timezone']);
+
+    $user = new WhatsAppUserMap();
+    foreach (parseMappings((string) env('USER_MAPPINGS', '')) as $displayName => $username) {
+        $user->add((string) $displayName, $username);
     }
+    $phone = new WhatsAppPhoneMap();
+    foreach (parseMappings((string) env('PHONE_MAPPINGS', '')) as $phoneNumber => $username) {
+        $phone->add((string) $phoneNumber, $username);
+    }
+
+    $posts = $converter->toArray($user, $phone, new WhatsAppEmojiMap(), $chat);
+} catch (\Exception $e) {
+    echo "Error: " . $e->getMessage() . "\n";
+    exit(1);
 }
 
-function importPostsDirectly(array $posts, string $mattermostUrl, string $token, string $teamName, string $channelName): bool {
-    $baseUrl = rtrim($mattermostUrl, '/') . '/api/v4';
-    
-    $headers = [
-        'Authorization: Bearer ' . $token,
-        'Content-Type: application/json'
-    ];
-    
-    // Get team ID
-    $teamUrl = $baseUrl . '/teams/name/' . $teamName;
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $teamUrl);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    
-    $teamResponse = curl_exec($ch);
-    $teamHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-    
-    if ($teamHttpCode !== 200) {
-        echo "Failed to get team ID. HTTP Code: $teamHttpCode\n";
-        return false;
-    }
-    
-    $teamData = json_decode($teamResponse, true);
-    $teamId = $teamData['id'];
-    
-    // Get channel ID
-    $channelUrl = $baseUrl . '/teams/' . $teamId . '/channels/name/' . $channelName;
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $channelUrl);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    
-    $channelResponse = curl_exec($ch);
-    $channelHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-    
-    if ($channelHttpCode !== 200) {
-        echo "Failed to get channel ID. HTTP Code: $channelHttpCode\n";
-        return false;
-    }
-    
-    $channelData = json_decode($channelResponse, true);
-    $channelId = $channelData['id'];
-    
-    // Import posts one by one
-    $postsUrl = $baseUrl . '/posts';
-    $successCount = 0;
-    $totalPosts = count($posts);
-    
-    foreach ($posts as $index => $postData) {
-        if ($postData['type'] === 'version' && $postData['version'] === '1.1.0') {
-            continue; // Skip version entries
-        }
-        
-        $post = $postData['post'];
-        $postPayload = [
-            'channel_id' => $channelId,
-            'message' => $post['message'],
-            'create_at' => $post['create_at']
-        ];
-        
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $postsUrl);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($postPayload));
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        
-        $postResponse = curl_exec($ch);
-        $postHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        
-        if ($postHttpCode === 200 || $postHttpCode === 201) {
-            $successCount++;
-            echo "Posted " . ($index + 1) . "/$totalPosts messages\r";
-        } else {
-            echo "\nFailed to post message " . ($index + 1) . ". HTTP Code: $postHttpCode\n";
-            echo "Response: $postResponse\n";
-        }
-        
-        // Small delay to avoid rate limiting
-        usleep(100000); // 0.1 second
-    }
-    
-    echo "\nSuccessfully imported $successCount out of $totalPosts posts.\n";
-    return $successCount > 0;
+$jsonl = implode("\n", array_map(function (array $obj): string {
+    return json_encode($obj, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}, $posts));
+$attachments = $converter->getAttachments();
+
+// Media report
+echo "Media folder: {$resolver->getBaseDir()} ({$resolver->count()} files)\n";
+foreach ($converter->getMissingMedia() as $missing) {
+    echo "[Warning] Failed to locate media file: {$missing['file']} (message from {$missing['user']} on {$missing['day']} {$missing['time']})\n";
 }
-
-function createImportZip(string $zipPath, string $jsonlData, string $mediaDir = ""): bool {
-    // Check if ZipArchive is available
-    if (!class_exists('ZipArchive')) {
-        echo "ZipArchive not available. Creating folder structure instead...\n";
-        return createImportFolder($zipPath, $jsonlData, $mediaDir);
-    }
-    
-    $zip = new ZipArchive();
-    
-    if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== TRUE) {
-        echo "Failed to create zip file: $zipPath\n";
-        return false;
-    }
-    
-    // Add the JSONL data to the zip
-    $zip->addFromString('data.jsonl', $jsonlData);
-    
-    // If media directory is provided, add media files to the data folder
-    if (!empty($mediaDir) && is_dir($mediaDir)) {
-        $files = scandir($mediaDir);
-        $addedFiles = 0;
-        foreach ($files as $file) {
-            if ($file !== '.' && $file !== '..' && is_file($mediaDir . '/' . $file)) {
-                // Only add common media file types
-                $extension = strtolower(pathinfo($file, PATHINFO_EXTENSION));
-                if (in_array($extension, ['jpg', 'jpeg', 'png', 'gif', 'mp4', 'webp', 'pdf', 'doc', 'docx', 'opus', 'aac', 'm4a'])) {
-                    if ($zip->addFile($mediaDir . '/' . $file, 'data/' . $file)) {
-                        $addedFiles++;
-                    }
-                }
-            }
-        }
-        echo "Added $addedFiles media files to the zip\n";
-    }
-    
-    $zip->close();
-    return true;
+$referenced = $converter->getMediaReferenceCount();
+$found = $referenced - count($converter->getMissingMedia());
+echo "Media references: $referenced, attached: $found, missing: " . count($converter->getMissingMedia()) . "\n";
+if ($referenced > 0 && $resolver->count() === 0) {
+    echo "No media files found. Pass the folder with the exported media via --media or WHATSAPP_MEDIA_DIR.\n";
 }
-
-function createImportFolder(string $basePath, string $jsonlData, string $mediaDir = ""): bool {
-    // Remove .zip extension if present and create folder
-    $folderPath = preg_replace('/\.zip$/', '', $basePath);
-    
-    if (!is_dir($folderPath)) {
-        if (!mkdir($folderPath, 0755, true)) {
-            echo "Failed to create folder: $folderPath\n";
-            return false;
-        }
-    }
-    
-    // Create data.jsonl file
-    $jsonlPath = $folderPath . '/data.jsonl';
-    if (file_put_contents($jsonlPath, $jsonlData) === false) {
-        echo "Failed to create data.jsonl file\n";
-        return false;
-    }
-    
-    // Create data directory and copy media files
-    if (!empty($mediaDir) && is_dir($mediaDir)) {
-        $dataDir = $folderPath . '/data';
-        if (!is_dir($dataDir)) {
-            if (!mkdir($dataDir, 0755, true)) {
-                echo "Failed to create data directory\n";
-                return false;
-            }
-        }
-        
-        $files = scandir($mediaDir);
-        $copiedFiles = 0;
-        foreach ($files as $file) {
-            if ($file !== '.' && $file !== '..' && is_file($mediaDir . '/' . $file)) {
-                // Only copy common media file types
-                $extension = strtolower(pathinfo($file, PATHINFO_EXTENSION));
-                if (in_array($extension, ['jpg', 'jpeg', 'png', 'gif', 'mp4', 'webp', 'pdf', 'doc', 'docx', 'opus', 'aac', 'm4a'])) {
-                    $sourcePath = $mediaDir . '/' . $file;
-                    $destPath = $dataDir . '/' . $file;
-                    if (copy($sourcePath, $destPath)) {
-                        $copiedFiles++;
-                    }
-                }
-            }
-        }
-        echo "Copied $copiedFiles media files to the data folder\n";
-    }
-    
-    echo "Import structure created at: $folderPath\n";
-    return true;
-}
-
-$user = new WhatsAppUserMap();
-$userMappings = parseMappings(env('USER_MAPPINGS', ''));
-foreach ($userMappings as $displayName => $username) {
-    $user->add($displayName, $username);
-}
-
-$phone = new WhatsAppPhoneMap();
-$phoneMappings = parseMappings(env('PHONE_MAPPINGS', ''));
-foreach ($phoneMappings as $phoneNumber => $username) {
-    $phone->add((string)$phoneNumber, $username);
-}
-
-// Configuration for Mattermost API (loaded from environment variables)
-$mattermostUrl = env('MATTERMOST_URL');
-$apiToken = env('MATTERMOST_API_TOKEN');
-$teamName = env('MATTERMOST_TEAM_NAME');
-$channelName = env('MATTERMOST_CHANNEL_NAME');
-
-$converter = new JsonLConverter($teamName, $channelName);
-$chat = new WhatsAppChat(env('WHATSAPP_CHAT_FILE'));
-
-echo "Choose import method:\n";
-echo "1. Direct API import (Bulk import using Mattermost import API)\n";
-echo "2. Individual post import (Posts one by one via regular API)\n";
-echo "3. Save to file only\n";
-echo "Enter choice (1-3): ";
-
-$choice = trim(fgets(STDIN));
 
 switch ($choice) {
     case '1':
         echo "Attempting bulk import via Mattermost import API...\n";
-        $json = $converter->toJsonL($user, $phone, new WhatsAppEmojiMap(), $chat);
-        
-        if ($mattermostUrl === "https://your-mattermost-server.com" || $apiToken === "your-api-token-here") {
-            echo "Please configure your Mattermost URL and API token in the script first.\n";
-            echo "Falling back to file save...\n";
-            createImportZip(env('IMPORT_ZIP_PATH'), $json, $chat->getMediaFolder());
-        } else {
-            if (!importToMattermost($json, $mattermostUrl, $apiToken, $chat->getMediaFolder())) {
-                echo "API import failed, saving to file as backup...\n";
-                createImportZip(env('IMPORT_ZIP_PATH'), $json, $chat->getMediaFolder());
-            }
+        $zip = writeImportPackage($config['output'], $jsonl, $attachments);
+        if ($zip === null) {
+            echo "Bulk import needs a zip package; please upload it manually with mmctl.\n";
+            exit(1);
+        }
+        if (!importToMattermost($config, $zip)) {
+            echo "API import failed. The import package is saved at $zip\n";
+            exit(1);
         }
         break;
-        
+
     case '2':
         echo "Attempting individual post import...\n";
-        $posts = $converter->toArray($user, $phone, new WhatsAppEmojiMap(), $chat);
-        
-        if ($mattermostUrl === "https://your-mattermost-server.com" || $apiToken === "your-api-token-here") {
-            echo "Please configure your Mattermost URL and API token in the script first.\n";
-            echo "Falling back to file save...\n";
-            $json = $converter->toJsonL($user, $phone, new WhatsAppEmojiMap(), $chat);
-            createImportZip(env('IMPORT_ZIP_PATH'), $json, $chat->getMediaFolder());
-        } else {
-            if (!importPostsDirectly($posts, $mattermostUrl, $apiToken, $teamName, $channelName)) {
-                echo "Direct post import failed, saving to file as backup...\n";
-                $json = $converter->toJsonL($user, $phone, new WhatsAppEmojiMap(), $chat);
-                createImportZip(env('IMPORT_ZIP_PATH'), $json, $chat->getMediaFolder());
-            }
+        if (!importPostsDirectly($config, $posts, $attachments)) {
+            echo "Direct post import failed, saving to file as backup...\n";
+            writeImportPackage($config['output'], $jsonl, $attachments);
+            exit(1);
         }
         break;
-        
+
     case '3':
     default:
         echo "Saving to file...\n";
-        $json = $converter->toJsonL($user, $phone, new WhatsAppEmojiMap(), $chat);
-        createImportZip(env('IMPORT_ZIP_PATH'), $json, $chat->getMediaFolder());
+        if (writeImportPackage($config['output'], $jsonl, $attachments) !== null) {
+            echo "Import it with:\n";
+            echo "  mmctl import upload {$config['output']}\n";
+            echo "  mmctl import list available\n";
+            echo "  mmctl import process <uploaded-file-name>\n";
+        }
         break;
 }
-
-?>

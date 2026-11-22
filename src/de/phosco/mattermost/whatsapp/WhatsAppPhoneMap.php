@@ -28,6 +28,11 @@ class WhatsAppPhoneMap {
         return "unknown-user";
     }
 
+    public function has(string $waPhone): bool {
+
+        return isset($this->map[$waPhone]);
+    }
+
     public function count(): int {
 
         return count($this->map);
