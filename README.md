@@ -65,7 +65,10 @@ A robust tool to convert WhatsApp chat exports into Mattermost-compatible format
    MATTERMOST_CHANNEL_NAME=your-channel-name
 
    # File Paths (use double backslashes for Windows paths)
+   # The chat .txt, or the .zip WhatsApp exported
    WHATSAPP_CHAT_FILE="C:\\path\\to\\your\\whatsapp\\chat\\export.txt"
+   # Optional: folder with the media files (searched recursively, default: folder of the chat file)
+   WHATSAPP_MEDIA_DIR="C:\\path\\to\\your\\whatsapp\\media"
    IMPORT_ZIP_PATH="C:\\path\\to\\save\\import.zip"
 
    # User Mappings (format: "Display Name"="username")
@@ -97,7 +100,15 @@ Make sure your `.env` file is properly configured (see Configuration section abo
 php src/convert.php
 ```
 
-Choose from three import methods:
+All file and channel settings can also be passed on the command line (they override `.env`):
+
+```bash
+php src/convert.php --input chat.txt --media ./media --output import.zip --method file
+php src/convert.php --input "WhatsApp Chat with Team.zip" --output import.zip --method file
+php src/convert.php --help
+```
+
+Choose from three import methods (or pass `--method 1|2|3`):
 1. **Bulk Import** - Uses Mattermost's import API (recommended)
 2. **Individual Posts** - Posts messages one by one via API
 3. **File Export** - Creates import package for manual upload
@@ -140,11 +151,35 @@ To get your Mattermost API token:
 
 ### Media Files
 
-Supported media types:
-- Images: JPG, JPEG, PNG, GIF, WebP
-- Videos: MP4
-- Audio: Opus, AAC, M4A
-- Documents: PDF, DOC, DOCX
+Every file the chat references is attached, whatever its type (images, videos, voice notes, stickers,
+documents, contacts, ...). Files that are not referenced by any message are not packaged.
+
+The converter recognises the media markers of Android and iOS exports in any UI language:
+
+| Export  | Example line in the chat file                                   |
+|---------|-----------------------------------------------------------------|
+| Android | `23.07.2023 14:23 - Ali: IMG-20230723-WA0001.jpg (dosya ekli)`  |
+| iOS     | `[23.07.2023 14:23:45] Ali: <attached: 00000012-PHOTO-2023-07-23-14-23-45.jpg>` |
+
+Media files are looked up in the media folder (`--media` / `WHATSAPP_MEDIA_DIR`, default: the folder of the chat file)
+**including all sub folders**, so a flat export folder and Android's `Media/WhatsApp Images/...` layout both work.
+Names are matched exactly first, then case-insensitively, ignoring invisible direction marks and Unicode
+normalisation differences (e.g. files copied from macOS), and finally by name with a different extension.
+
+Media that cannot be found is reported:
+
+```
+[Warning] Failed to locate media file: IMG-20230723-WA0099.jpg (message from Ali on 23.07.2023 14:25)
+Media references: 120, attached: 119, missing: 1
+```
+
+and the original text (`IMG-20230723-WA0099.jpg (dosya ekli)`) is kept in the message, so nothing is lost silently.
+
+### Date Formats and Time Zone
+
+Day-first (`23.07.2023`), month-first (`7/23/23`) and year-first dates, 24h and 12h clocks are detected
+automatically. If the order is ambiguous (all days ≤ 12), set `DATE_ORDER=DMY`, `MDY` or `YMD`.
+WhatsApp timestamps are local time; set `TIMEZONE` (e.g. `Europe/Istanbul`) to the phone's time zone.
 
 ## 🔄 Import Methods
 
@@ -152,17 +187,20 @@ Supported media types:
 
 Uses Mattermost's bulk import API for faster processing:
 
+Builds the import package, uploads it and runs the import job (same as `mmctl import upload` + `mmctl import process`):
+
 - ✅ Faster import for large chats
 - ✅ Preserves message timestamps
 - ✅ Handles media attachments
-- ❌ Requires admin permissions
-- ⚠️ Posts appear under the account performing the import, not original sender names
+- ✅ Correctly attributes posts to original sender names (via user mapping)
+- ❌ Requires a system admin token
 
 ### Method 2: Individual Posts
 
 Posts messages one by one using the regular API:
 
 - ✅ Works with standard user permissions
+- ✅ Uploads media attachments with each post
 - ✅ Good for smaller chats
 - ❌ Slower for large chats
 - ❌ May hit rate limits
@@ -378,9 +416,17 @@ $emojiMap->add("❤️", ":heart:");
 - Ensure you have proper permissions
 
 **Missing media files:**
-- Ensure media folder is in the same directory as chat export
-- Check supported file formats
+- Check the `[Warning] Failed to locate media file` lines in the output
+- Point `--media` / `WHATSAPP_MEDIA_DIR` at the folder that contains the media (sub folders are searched)
+- Make sure the chat was exported with "Include media" - `<Media omitted>` lines have no file
 - Verify file permissions
+- Inspect the package with `unzip -l import.zip`: attachments must be under `data/`, and the `path`
+  values in `data.jsonl` are relative to that folder (e.g. `"path":"IMG-20230723-WA0001.jpg"`)
+- Attachments larger than the server's `FileSettings.MaxFileSize` are rejected by Mattermost
+
+**Self-signed certificates:**
+- TLS certificates are verified by default. For a test server with a self-signed certificate set
+  `MATTERMOST_SKIP_TLS_VERIFY=true`
 
 ### Debug Mode
 
@@ -402,10 +448,15 @@ whatsapp-mattermost/
 │           └── mattermost/
 │               └── whatsapp/
 │                   ├── WhatsAppChat.php      # Parses WhatsApp chat exports
+│                   ├── Post.php              # Splits a message into text, emoji, mentions and media
+│                   ├── MediaResolver.php     # Finds the media files referenced in the chat
+│                   ├── ImportPackage.php     # Writes the Mattermost import zip
 │                   ├── JsonLConverter.php    # Converts chat data to Mattermost format
 │                   ├── WhatsAppUserMap.php   # Maps WhatsApp users to Mattermost usernames
 │                   ├── WhatsAppPhoneMap.php  # Maps phone numbers to usernames
 │                   └── WhatsAppEmojiMap.php  # Handles emoji conversion
+├── tests/
+│   └── test_media_import.php              # Media import regression tests
 ├── composer.json                          # PHP dependencies
 ├── test_ziparchive.php                    # Test for PHP Zip extension
 └── README.md                              # Project documentation
@@ -431,6 +482,9 @@ Get-ChildItem -Path src -Filter "*.php" -Recurse | ForEach-Object { php -l $_.Fu
 
 # Test ZIP functionality
 php test_ziparchive.php
+
+# Run the tests
+composer test
 ```
 
 ## 📄 License

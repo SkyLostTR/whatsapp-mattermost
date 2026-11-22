@@ -23,15 +23,18 @@ class Post {
 
     private function processContent(string $content): array {
 
+        $media = self::extractMedia($content);
+        if ($media === null) {
+            return $this->splitOnEmoji($content);
+        }
+
         $res = array();
-        foreach ($this->splitOnEmoji($content) as $entry) {
-
-            if ($entry instanceof Text) {
-                $res = array_merge($res, $this->stripMedia($entry));
-                continue;
-            }
-
-            $res[] = $entry;
+        if (trim($media['before']) !== '') {
+            $res = array_merge($res, $this->splitOnEmoji(rtrim($media['before'])));
+        }
+        $res[] = new Media($media['file'], $media['original']);
+        if (trim($media['after']) !== '') {
+            $res = array_merge($res, array(new Text(" ")), $this->splitOnEmoji(ltrim($media['after'])));
         }
         return $res;
     }
@@ -62,20 +65,49 @@ class Post {
         return $res;
     }
 
-    private function stripMedia(Text $content): array {
+    /**
+     * Captions WhatsApp appends to attached files when no LRM marker is present
+     * (Android "Export chat" -> "Include media", lower case, per UI language).
+     */
+    private const ATTACHED_PHRASES = array(
+        'file attached', 'dosya ekli', 'datei angehängt', 'archivo adjunto', 'arquivo anexado',
+        'ficheiro anexado', 'fichier joint', 'file allegato', 'bestand bijgevoegd', 'plik załączony',
+        'файл прикреплен', 'файл прикреплён', 'fișier atașat', 'fil bifogad', 'fil vedhæftet', 'fil vedlagt'
+    );
 
-        $matches = array();
-        if (preg_match('/(.*)\xe2\x80\x8e([^\s]*) \(.*\)/', $content->getContent(), $matches) === 1) {
+    /**
+     * Detect a media reference in a chat line.
+     *
+     * Supported formats:
+     *  - Android: "\u{200E}IMG-20230723-WA0001.jpg (file attached)" (caption localised, e.g. "(dosya ekli)")
+     *  - Android without the LRM marker (stripped by editors/other tools)
+     *  - iOS:     "\u{200E}<attached: 00000012-PHOTO-2023-07-23-14-23-00.jpg>" (label localised, e.g. "<ekli: ...>")
+     *
+     * @return array{before:string,file:string,after:string,original:string}|null
+     */
+    public static function extractMedia(string $line): ?array {
 
-            $res = array();
-            if (!empty($matches[1])) {
-                $res[] = new Text($matches[1]);
-            }
-            $res[] = new Media($matches[2]);
-            return $res;
+        $ext = '\\.[\\p{L}\\p{N}]{1,10}';
+
+        // iOS: <attached: file.ext>
+        if (preg_match('/^(.*?)\\x{200E}?(<\\s*[^<>:]{1,40}:\\s*([^<>]+?' . $ext . ')\\s*>)(.*)$/u', $line, $m) === 1) {
+            return array('before' => $m[1], 'file' => $m[3], 'after' => $m[4], 'original' => $m[2]);
         }
 
-        return array($content);
+        // Android with LRM marker: \u{200E}file.ext (file attached)
+        if (preg_match('/^(.*?)\\x{200E}((.+?' . $ext . ') \\([^()]{1,60}\\))(.*)$/u', $line, $m) === 1) {
+            return array('before' => $m[1], 'file' => $m[3], 'after' => $m[4], 'original' => $m[2]);
+        }
+
+        // Android without LRM marker: the whole line must be "file.ext (caption)"
+        if (preg_match('/^\\s*((\\S.*?' . $ext . ') \\(([^()]{1,60})\\))\\s*$/u', $line, $m) === 1) {
+            $phrase = function_exists('mb_strtolower') ? mb_strtolower(trim($m[3]), 'UTF-8') : strtolower(trim($m[3]));
+            if (preg_match('/\\s/u', $m[2]) !== 1 || in_array($phrase, self::ATTACHED_PHRASES, true)) {
+                return array('before' => '', 'file' => $m[2], 'after' => '', 'original' => $m[1]);
+            }
+        }
+
+        return null;
     }
 
     public function append(string $line) {

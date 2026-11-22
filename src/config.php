@@ -52,42 +52,81 @@ function parseMappings(string $mappings): array
 }
 
 /**
- * Validate required environment configuration.
+ * Interpret an environment value as boolean ("1", "true", "yes", "on").
+ */
+function envBool(string $key, bool $default = false): bool
+{
+    $value = env($key);
+    if ($value === null) {
+        return $default;
+    }
+    return filter_var($value, FILTER_VALIDATE_BOOLEAN);
+}
+
+/**
+ * Validate the effective configuration.
+ *
+ * @param array<string,mixed> $config     Keys: chat_file, output, team, channel, url, token
+ * @param bool                $requireApi Whether Mattermost API credentials are needed
  *
  * @return array<int,string> List of error messages
  */
-function validateEnvironment(): array
+function validateConfig(array $config, bool $requireApi): array
 {
     $errors = [];
 
     $required = [
-        'WHATSAPP_CHAT_FILE',
-        'IMPORT_ZIP_PATH',
-        'MATTERMOST_URL',
-        'MATTERMOST_API_TOKEN',
-        'MATTERMOST_TEAM_NAME',
-        'MATTERMOST_CHANNEL_NAME',
+        'chat_file' => 'WHATSAPP_CHAT_FILE (--input)',
+        'output'    => 'IMPORT_ZIP_PATH (--output)',
+        'team'      => 'MATTERMOST_TEAM_NAME (--team)',
+        'channel'   => 'MATTERMOST_CHANNEL_NAME (--channel)',
     ];
+    if ($requireApi) {
+        $required['url'] = 'MATTERMOST_URL';
+        $required['token'] = 'MATTERMOST_API_TOKEN';
+    }
 
-    foreach ($required as $key) {
-        $value = env($key);
+    foreach ($required as $key => $label) {
+        $value = $config[$key] ?? null;
         if ($value === null || trim((string) $value) === '') {
-            $errors[] = "$key is not set or empty";
-            continue;
-        }
-        if ($key === 'WHATSAPP_CHAT_FILE' && !file_exists($value)) {
-            $errors[] = "WHATSAPP_CHAT_FILE not found at $value";
+            $errors[] = "$label is not set or empty";
         }
     }
 
-    if (env('MATTERMOST_URL') === 'https://your-mattermost-server.com') {
-        $errors[] = 'MATTERMOST_URL is set to placeholder value';
+    if (!empty($config['chat_file']) && !file_exists($config['chat_file'])) {
+        $errors[] = "WhatsApp chat export not found at {$config['chat_file']}";
     }
 
-    if (env('MATTERMOST_API_TOKEN') === 'your-api-token-here') {
-        $errors[] = 'MATTERMOST_API_TOKEN is set to placeholder value';
+    if (!empty($config['media_dir']) && !is_dir($config['media_dir'])) {
+        $errors[] = "Media folder not found at {$config['media_dir']}";
+    }
+
+    if ($requireApi) {
+        if (($config['url'] ?? null) === 'https://your-mattermost-server.com') {
+            $errors[] = 'MATTERMOST_URL is set to placeholder value';
+        }
+        if (($config['token'] ?? null) === 'your-api-token-here') {
+            $errors[] = 'MATTERMOST_API_TOKEN is set to placeholder value';
+        }
     }
 
     return $errors;
 }
 
+/**
+ * Validate required environment configuration (all settings, including API credentials).
+ *
+ * @return array<int,string> List of error messages
+ */
+function validateEnvironment(): array
+{
+    return validateConfig([
+        'chat_file' => env('WHATSAPP_CHAT_FILE'),
+        'media_dir' => env('WHATSAPP_MEDIA_DIR'),
+        'output'    => env('IMPORT_ZIP_PATH'),
+        'team'      => env('MATTERMOST_TEAM_NAME'),
+        'channel'   => env('MATTERMOST_CHANNEL_NAME'),
+        'url'       => env('MATTERMOST_URL'),
+        'token'     => env('MATTERMOST_API_TOKEN'),
+    ], true);
+}
